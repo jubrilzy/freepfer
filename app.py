@@ -112,6 +112,18 @@ def _page_to_b64(editor: PDFEditor, page_num: int, zoom: float = 1.5) -> str:
     png_bytes = pix.tobytes("png")
     return base64.b64encode(png_bytes).decode()
 
+def _images_to_json(editor: PDFEditor, page_num: int) -> list:
+    out = []
+    for img in editor.get_images(page_num):
+        out.append({
+            "bbox":   list(img.bbox),
+            "width":  img.width,
+            "height": img.height,
+            "xref":   img.xref,
+            "ext":    img.ext,
+        })
+    return out
+
 def _spans_to_json(editor: PDFEditor, page_num: int) -> list:
     out = []
     for s in editor.get_spans(page_num):
@@ -169,6 +181,7 @@ def upload():
         "page_count":  editor.page_count,
         "page_image":  _page_to_b64(editor, 0),
         "spans":       _spans_to_json(editor, 0),
+        "images":      _images_to_json(editor, 0),
         "fonts":       editor.get_unique_fonts(),
     })
 
@@ -181,6 +194,7 @@ def get_page(sid, page_num):
     return jsonify({
         "page_image": _page_to_b64(editor, page_num),
         "spans":      _spans_to_json(editor, page_num),
+        "images":     _images_to_json(editor, page_num),
     })
 
 @app.route("/edit", methods=["POST"])
@@ -227,7 +241,68 @@ def edit():
         "message":        result.message,
         "page_image":     _page_to_b64(editor, page_num),
         "spans":          _spans_to_json(editor, page_num),
+        "images":         _images_to_json(editor, page_num),
     })
+
+@app.route("/move", methods=["POST"])
+def move():
+    data      = request.get_json()
+    sid       = data.get("session_id")
+    page_num  = data.get("page")
+    bbox      = data.get("bbox")
+    new_x     = data.get("new_x")
+    new_y     = data.get("new_y")
+    if not all([sid, bbox is not None, new_x is not None, new_y is not None]):
+        return jsonify({"error": "Missing fields"}), 400
+    s = _get_session(sid)
+    editor: PDFEditor = s["editor"]
+    target = None
+    for span in editor.get_spans(page_num):
+        sx0, sy0, sx1, sy1 = span.bbox
+        if abs(sx0 - bbox[0]) < 1 and abs(sy0 - bbox[1]) < 1:
+            target = span; break
+    if not target:
+        return jsonify({"error": "Span not found"}), 404
+    result = editor.move_text(target, new_x, new_y)
+    return jsonify({
+        "success":    result.success,
+        "page_image": _page_to_b64(editor, page_num),
+        "spans":      _spans_to_json(editor, page_num),
+        "images":     _images_to_json(editor, page_num),
+    })
+
+
+@app.route("/image_op", methods=["POST"])
+def image_op():
+    op       = request.form.get("op")          # replace | resize | delete
+    sid      = request.form.get("session_id")
+    page_num = int(request.form.get("page", 0))
+    bbox     = [float(v) for v in request.form.get("bbox", "").split(",")]
+    s = _get_session(sid)
+    editor: PDFEditor = s["editor"]
+
+    if op == "delete":
+        editor.delete_image(page_num, bbox)
+    elif op == "resize":
+        new_bbox = [float(v) for v in request.form.get("new_bbox", "").split(",")]
+        editor.resize_image(page_num, bbox, new_bbox)
+    elif op == "replace":
+        f = request.files.get("image")
+        if not f:
+            return jsonify({"error": "No image file"}), 400
+        new_bbox_str = request.form.get("new_bbox", "")
+        new_bbox = [float(v) for v in new_bbox_str.split(",")] if new_bbox_str else None
+        editor.replace_image(page_num, bbox, f.read(), new_bbox)
+    else:
+        return jsonify({"error": "Unknown op"}), 400
+
+    return jsonify({
+        "success":    True,
+        "page_image": _page_to_b64(editor, page_num),
+        "spans":      _spans_to_json(editor, page_num),
+        "images":     _images_to_json(editor, page_num),
+    })
+
 
 @app.route("/gfont/<path:family>")
 def gfont(family):
