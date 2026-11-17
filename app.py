@@ -66,24 +66,57 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
 
 # ------------------------------------------------------------------ #
-#  Session store (in-memory; fine for free tier single instance)      #
+#  Session store — disk-backed so sessions survive restarts/deploys   #
 # ------------------------------------------------------------------ #
 
-_sessions: dict[str, dict] = {}  # sid → {editor, tmp_path}
+SESSION_DIR = "/tmp/freepfer_sessions"
+os.makedirs(SESSION_DIR, exist_ok=True)
+
+_sessions: dict[str, dict] = {}   # sid → {editor, pdf_path}
 _sessions_lock = threading.Lock()
+
+def _session_pdf_path(sid: str) -> str:
+    d = os.path.join(SESSION_DIR, sid)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "current.pdf")
 
 def _new_session(editor: PDFEditor, tmp_path: str) -> str:
     sid = uuid.uuid4().hex
+    pdf_path = _session_pdf_path(sid)
+    # Persist to disk immediately
+    _save_editor(editor, pdf_path)
     with _sessions_lock:
-        _sessions[sid] = {"editor": editor, "tmp_path": tmp_path}
+        _sessions[sid] = {"editor": editor, "pdf_path": pdf_path}
+    # Clean up original tmp file
+    try:
+        if tmp_path != pdf_path:
+            os.unlink(tmp_path)
+    except Exception:
+        pass
     return sid
+
+def _save_editor(editor: PDFEditor, path: str) -> None:
+    """Save editor state to disk without closing the document."""
+    tmp = path + ".tmp"
+    editor.save(tmp)
+    os.replace(tmp, path)
 
 def _get_session(sid: str) -> dict:
     with _sessions_lock:
         s = _sessions.get(sid)
-    if not s:
-        abort(404, "Session not found or expired")
-    return s
+    if s:
+        return s
+    # Not in memory — try to reload from disk (survives restarts)
+    pdf_path = os.path.join(SESSION_DIR, sid, "current.pdf")
+    if os.path.exists(pdf_path):
+        try:
+            editor = PDFEditor(pdf_path)
+            with _sessions_lock:
+                _sessions[sid] = {"editor": editor, "pdf_path": pdf_path}
+            return _sessions[sid]
+        except Exception as e:
+            print(f"[session] reload failed for {sid}: {e}")
+    abort(404, "Session not found or expired")
 
 # ------------------------------------------------------------------ #
 #  Font matcher (singleton, loaded once at startup)                   #
@@ -234,6 +267,7 @@ def edit():
         font_path = matcher.match(target.font_name)
     result = editor.replace_text(target, new_text, font_path)
 
+    _save_editor(editor, s["pdf_path"])  # persist after edit
     return jsonify({
         "success":        result.success,
         "font_preserved": result.font_preserved,
@@ -296,6 +330,7 @@ def image_op():
     else:
         return jsonify({"error": "Unknown op"}), 400
 
+    _save_editor(editor, s["pdf_path"])  # persist after image op
     return jsonify({
         "success":    True,
         "page_image": _page_to_b64(editor, page_num),
@@ -316,17 +351,26 @@ def gfont(family):
 
 @app.route("/download/<sid>")
 def download(sid):
-    s = _get_session(sid)
-    editor: PDFEditor = s["editor"]
+    # Try disk-first so download works even if memory session expired
+    pdf_path = os.path.join(SESSION_DIR, sid, "current.pdf")
+    if not os.path.exists(pdf_path):
+        # Try loading into memory (may 404 if truly gone)
+        _get_session(sid)
+        pdf_path = os.path.join(SESSION_DIR, sid, "current.pdf")
 
+    # Save latest in-memory edits to disk before serving
+    with _sessions_lock:
+        s = _sessions.get(sid)
+    if s:
+        _save_editor(s["editor"], pdf_path)
+
+    if not os.path.exists(pdf_path):
+        abort(404, "Session not found or expired")
+
+    # Read into BytesIO so the file isn't locked
     out = io.BytesIO()
-    # Save to temp then read back (PyMuPDF needs a path or supports save to bytes)
-    tmp_out = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp_out.close()
-    editor.save(tmp_out.name)
-    with open(tmp_out.name, "rb") as fh:
+    with open(pdf_path, "rb") as fh:
         out.write(fh.read())
-    os.unlink(tmp_out.name)
     out.seek(0)
 
     return send_file(
