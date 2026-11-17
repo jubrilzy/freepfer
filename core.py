@@ -89,15 +89,26 @@ class PDFEditor:
                                     span_idx=s_idx,
                                     flags=span.get("flags", 0),
                                 ))
-                elif btype == 1:  # image block
-                    self._images.append(ImageBlock(
-                        bbox=tuple(block["bbox"]),
-                        width=block.get("width", 0),
-                        height=block.get("height", 0),
-                        xref=block.get("xref", 0),
-                        ext=block.get("ext", "png"),
-                        page_num=page_num,
-                    ))
+            # Scan actual embedded images via get_images (more reliable than dict blocks)
+            for img_info in page.get_images(full=True):
+                xref = img_info[0]
+                width = img_info[2]
+                height = img_info[3]
+                ext = img_info[9] if len(img_info) > 9 else "png"
+                try:
+                    rects = page.get_image_rects(xref)
+                except Exception:
+                    rects = []
+                for rect in rects:
+                    if rect.width > 2 and rect.height > 2:
+                        self._images.append(ImageBlock(
+                            bbox=(rect.x0, rect.y0, rect.x1, rect.y1),
+                            width=width,
+                            height=height,
+                            xref=xref,
+                            ext=ext or "png",
+                            page_num=page_num,
+                        ))
 
     def get_spans(self, page_num: Optional[int] = None) -> List[TextSpan]:
         if page_num is None:
