@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FreePfer — Starting up</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    min-height: 100vh;
+    background: #0A0F1E;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #fff;
+    overflow: hidden;
+  }
+
+  /* Animated background blobs */
+  .blob {
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.15;
+    animation: drift 8s ease-in-out infinite alternate;
+  }
+  .blob-1 { width: 500px; height: 500px; background: #2563EB; top: -100px; left: -100px; animation-delay: 0s; }
+  .blob-2 { width: 400px; height: 400px; background: #7C3AED; bottom: -100px; right: -100px; animation-delay: 2s; }
+  .blob-3 { width: 300px; height: 300px; background: #0EA5E9; top: 50%; left: 50%; transform: translate(-50%,-50%); animation-delay: 4s; }
+
+  @keyframes drift {
+    from { transform: translate(0, 0) scale(1); }
+    to   { transform: translate(30px, 20px) scale(1.1); }
+  }
+
+  .card {
+    position: relative;
+    z-index: 10;
+    text-align: center;
+    padding: 3rem 4rem;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 24px;
+    backdrop-filter: blur(20px);
+    max-width: 480px;
+    width: 90%;
+  }
+
+  /* Logo */
+  .logo {
+    font-size: 2.4rem;
+    font-weight: 800;
+    letter-spacing: -1px;
+    background: linear-gradient(135deg, #60A5FA, #A78BFA);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.25rem;
+  }
+  .tagline {
+    font-size: 0.85rem;
+    color: #64748B;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 2.5rem;
+  }
+
+  /* Spinner ring */
+  .spinner-wrap {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 2rem;
+  }
+  .ring {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.08);
+    border-top-color: #2563EB;
+    border-right-color: #7C3AED;
+    animation: spin 1.2s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .status-text {
+    font-size: 1rem;
+    color: #CBD5E1;
+    margin-bottom: 1.5rem;
+    min-height: 1.5em;
+  }
+
+  /* Progress bar */
+  .progress-track {
+    height: 4px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-bottom: 2rem;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #2563EB, #7C3AED);
+    border-radius: 999px;
+    transition: width 1s ease;
+  }
+
+  .dots {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 1rem;
+  }
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #334155;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .dot:nth-child(2) { animation-delay: 0.2s; }
+  .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes pulse {
+    0%, 100% { background: #334155; transform: scale(1); }
+    50%       { background: #60A5FA; transform: scale(1.3); }
+  }
+
+  .footnote {
+    font-size: 0.75rem;
+    color: #475569;
+    margin-top: 2rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<div class="blob blob-3"></div>
+
+<div class="card">
+  <div class="logo">FreePfer</div>
+  <div class="tagline">PDF Editor</div>
+
+  <div class="spinner-wrap">
+    <div class="ring"></div>
+  </div>
+
+  <p class="status-text" id="status">Starting up the engine…</p>
+
+  <div class="progress-track">
+    <div class="progress-fill" id="progress"></div>
+  </div>
+
+  <div class="dots">
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+  </div>
+
+  <p class="footnote">Free hosting wakes up in about 60 seconds.<br>Hang tight — it's worth it.</p>
+</div>
+
+<script>
+  const statusEl   = document.getElementById("status");
+  const progressEl = document.getElementById("progress");
+
+  const messages = [
+    [0,  "Starting up the engine…"],
+    [15, "Loading font library…"],
+    [30, "Almost there…"],
+    [50, "Warming up PDF tools…"],
+    [70, "Nearly ready…"],
+    [85, "Just a moment…"],
+  ];
+
+  let elapsed = 0;
+  let msgIdx  = 0;
+
+  const timer = setInterval(() => {
+    elapsed++;
+    // Progress bar: asymptotic approach to 95%
+    const pct = 95 * (1 - Math.exp(-elapsed / 45));
+    progressEl.style.width = pct + "%";
+
+    // Status message
+    const next = messages[msgIdx + 1];
+    if (next && elapsed >= next[0]) {
+      msgIdx++;
+      statusEl.textContent = messages[msgIdx][1];
+    }
+  }, 1000);
+
+  // Poll the app
+  async function ping() {
+    try {
+      const r = await fetch("/ping", { cache: "no-store" });
+      if (r.ok) {
+        clearInterval(timer);
+        progressEl.style.width = "100%";
+        statusEl.textContent   = "Ready! Redirecting…";
+        setTimeout(() => { window.location.href = "/"; }, 600);
+        return;
+      }
+    } catch (_) {}
+    setTimeout(ping, 3000);
+  }
+
+  // Start pinging after 5s
+  setTimeout(ping, 5000);
+</script>
+</body>
+</html>
