@@ -1,27 +1,66 @@
 """
 FreePfer — Flask backend
 Endpoints:
-  GET  /                  → editor UI
-  GET  /wake              → wake-up landing page
-  GET  /ping              → health check (used by wake-up page)
-  POST /upload            → upload PDF, returns session_id + page 0 image + spans
-  GET  /page/<sid>/<n>    → render page n as base64 PNG
-  POST /edit              → apply a text edit, returns updated page image
-  GET  /download/<sid>    → download edited PDF
+  GET  /                      → editor UI
+  GET  /wake                  → wake-up landing page
+  GET  /ping                  → health check
+  POST /upload                → upload PDF, returns session_id + page 0 image + spans
+  GET  /page/<sid>/<n>        → render page n as base64 PNG
+  POST /edit                  → apply a text edit, returns updated page image
+  GET  /download/<sid>        → download edited PDF
+  GET  /gfont/<family>        → download & cache a Google Font, return TTF as base64
 """
 
 import os
 import io
+import re
 import uuid
 import base64
 import tempfile
 import threading
+import urllib.request
 from pathlib import Path
 from flask import (Flask, request, jsonify, send_file,
                    render_template, abort)
 
 from core import PDFEditor
 from font_matcher import FontMatcher
+
+# Google Font cache directory
+GFONT_CACHE = "/tmp/gfonts"
+os.makedirs(GFONT_CACHE, exist_ok=True)
+
+def download_gfont(family: str) -> str | None:
+    """Download a Google Font TTF, cache it, return local path or None."""
+    safe = re.sub(r'[^a-zA-Z0-9_-]', '_', family)
+    path = os.path.join(GFONT_CACHE, f"{safe}.ttf")
+    if os.path.exists(path):
+        return path
+    try:
+        css_url = f"https://fonts.googleapis.com/css2?family={family.replace(' ', '+')}:wght@400&display=swap"
+        req = urllib.request.Request(css_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            css = r.read().decode()
+        # Prefer TTF, fall back to woff2
+        m = re.search(r'src:\s*url\(([^)]+\.ttf)\)', css)
+        if not m:
+            m = re.search(r'url\(([^)]+)\)\s*format\([\'"]truetype[\'"]\)', css)
+        if not m:
+            m = re.search(r'url\(([^)]+\.woff2)\)', css)
+        if not m:
+            m = re.search(r'url\(([^)]+)\)', css)
+        if not m:
+            return None
+        font_url = m.group(1).strip("'\"")
+        req2 = urllib.request.Request(font_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req2, timeout=15) as r2:
+            data = r2.read()
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+    except Exception as e:
+        print(f"[gfont] download failed for '{family}': {e}")
+        return None
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
@@ -173,7 +212,12 @@ def edit():
     if not target:
         return jsonify({"error": "Span not found — page may have changed"}), 404
 
-    font_path = matcher.match(target.font_name)
+    # Google Font override?
+    gfont_name = data.get("gfont", "").strip()
+    if gfont_name:
+        font_path = download_gfont(gfont_name)
+    else:
+        font_path = matcher.match(target.font_name)
     result = editor.replace_text(target, new_text, font_path)
 
     return jsonify({
@@ -184,6 +228,16 @@ def edit():
         "page_image":     _page_to_b64(editor, page_num),
         "spans":          _spans_to_json(editor, page_num),
     })
+
+@app.route("/gfont/<path:family>")
+def gfont(family):
+    """Return cached Google Font TTF as base64, or 404."""
+    path = download_gfont(family)
+    if not path:
+        return jsonify({"error": "Font not found"}), 404
+    with open(path, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    return jsonify({"family": family, "ttf_b64": data})
 
 @app.route("/download/<sid>")
 def download(sid):
